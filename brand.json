@@ -1,0 +1,19 @@
+{
+  "_note": "PLACEHOLDER brand theme. Replace these values with the real brand (colors as hex, fonts by family name). Fonts outside the HyperFrames bundled set need a file in fontFiles, e.g. {\"Brand Sans\": \"fonts/BrandSans-Black.woff2\"} (path relative to this file).",
+  "name": "placeholder",
+  "colors": {
+    "accent": "#FF5A36",
+    "accent2": "#FFD23F",
+    "ink": "#0E0F13",
+    "paper": "#FFFFFF",
+    "muted": "#C9CCD6"
+  },
+  "fonts": {
+    "display": "Inter",
+    "displayWeight": 900,
+    "caption": "Inter",
+    "captionWeight": 900
+  },
+  "fontFiles": {},
+  "handle": ""
+}
