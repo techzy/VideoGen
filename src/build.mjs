@@ -258,8 +258,12 @@ function overlayScene(id, row, style, canvas, fontCss, motion) {
     const iconSize = Math.round(unit * 0.16);
     css = `    #${id}-box { position: absolute; left: 0; width: ${W}px; top: ${Math.round(cy - (size + (icon ? iconSize + 20 : 0)) / 2)}px;
       display: flex; flex-direction: column; align-items: center; gap: ${Math.round(unit * 0.02)}px; }
-    #${id}-text { font-family: "${ts.font}"; font-weight: ${ts.weight}; font-size: ${size}px; line-height: 1.02; color: ${color};
-      text-align: center; padding: 0 ${Math.round(W * 0.08)}px; letter-spacing: -0.02em; text-shadow: 0 8px 28px ${hexA("#000", 0.55)}; }
+    #${id}-text { font-family: "${ts.font}"; font-weight: ${row.opts.weight || ts.weight}; font-size: ${size}px; line-height: 1.02; color: ${color};
+      text-align: center; letter-spacing: -0.02em; ${
+        row.opts.box
+          ? `background: ${row.opts.box}; padding: 0.16em 0.32em 0.2em; border-radius: 0.14em; max-width: ${Math.round(W * 0.9)}px;`
+          : `padding: 0 ${Math.round(W * 0.08)}px; text-shadow: 0 8px 28px ${hexA("#000", 0.55)};`
+      } }
     #${id}-text .w, #${id}-text .ch { display: inline-block; }`;
     markup = `    <div id="${id}-box">
       ${icon ? iconSvg(ICON_NAMES.includes(icon) ? icon : "idea", { size: iconSize, stroke: ts.accent, width: 4.5, id: `${id}-icon` }) : ""}

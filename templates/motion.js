@@ -20,6 +20,10 @@
 
   /* Entrances: in.<name> */
   const IN = {
+    // already on screen at `at` (use at 0 for anything that must show on the first frame)
+    none(tl, el, at) {
+      tl.set(el, { opacity: 1 }, at);
+    },
     cut(tl, el, at) {
       tl.fromTo(el, { opacity: 0 }, { opacity: 1, duration: 0.01 }, at);
     },
