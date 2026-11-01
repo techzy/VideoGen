@@ -37,12 +37,8 @@ export async function extractAudio(video, outWav) {
   await run("ffmpeg", ["-v", "error", "-y", "-i", video, "-vn", "-ac", "1", "-ar", "16000", outWav]);
 }
 
-/**
- * Find pauses from 20 ms frame energy. The threshold sits between the
- * noise floor and typical speech level, so a car, a noisy room and a quiet
- * studio all work without tuning.
- */
-export async function detectSilences(file, { minDuration = 0.18 } = {}) {
+/** Loudness (dBFS) of the audio in fixed frames: { step, db[] }. */
+export async function frameEnergy(file, step = 0.02) {
   const rate = 16000;
   const pcm = await new Promise((resolve, reject) => {
     const chunks = [];
@@ -52,13 +48,23 @@ export async function detectSilences(file, { minDuration = 0.18 } = {}) {
     child.on("close", (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error("ffmpeg could not decode the audio"))));
   });
   const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.length / 2));
-  const hop = rate * 0.02;
+  const hop = Math.round(rate * step);
   const db = [];
   for (let i = 0; i + hop <= samples.length; i += hop) {
     let sum = 0;
     for (let k = i; k < i + hop; k++) sum += samples[k] * samples[k];
     db.push(10 * Math.log10(sum / hop / 32768 ** 2 + 1e-12));
   }
+  return { step, db };
+}
+
+/**
+ * Find pauses from 20 ms frame energy. The threshold sits between the
+ * noise floor and typical speech level, so a car, a noisy room and a quiet
+ * studio all work without tuning.
+ */
+export async function detectSilences(file, { minDuration = 0.18 } = {}) {
+  const { db } = await frameEnergy(file, 0.02);
   if (!db.length) return [];
   // light smoothing so single quiet frames inside words don't count
   const sm = db.map((_, i) => {

@@ -80,7 +80,7 @@ export async function runQa(root, { format, log = () => {} } = {}) {
     if (!src) continue;
     spoken += src.words.filter((w) => w.flag !== "filler" && (w.start + w.end) / 2 >= c.in && (w.start + w.end) / 2 <= c.out).length;
   }
-  if (spoken) checks.push({ name: `Captions cover ${build.captionWords >= spoken ? spoken : build.captionWords}/${spoken} spoken words`, ok: build.captionWords >= spoken });
+  if (spoken && build.captionsEnabled) checks.push({ name: `Captions cover ${build.captionWords >= spoken ? spoken : build.captionWords}/${spoken} spoken words`, ok: build.captionWords >= spoken });
 
   // music ducking
   const music = build.timeline.audio.filter((a) => a.type === "music");

@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseSrt, cuesToWords } from "./srt.mjs";
-import { probe, extractAudio, detectSilences } from "./media.mjs";
+import { probe, extractAudio, detectSilences, frameEnergy } from "./media.mjs";
 import { transcribeWords } from "./transcribe.mjs";
-import { alignToAsr, alignFromCues } from "./align.mjs";
+import { alignToAsr, alignFromCues, fitToSpeech } from "./align.mjs";
 import { findRetakes, planCuts } from "./edit.mjs";
 import { normWord, round, log } from "./util.mjs";
 
@@ -50,6 +50,22 @@ export function findRestarts(words) {
     }
   }
   return out;
+}
+
+export function snapEdgesToQuiet(keep, { step, db }, duration, window = 0.12) {
+  const level = (t) => db[Math.min(db.length - 1, Math.max(0, Math.round(t / step)))] ?? -99;
+  const quietest = (t, lo, hi) => {
+    let best = t;
+    for (let u = Math.max(lo, t - window); u <= Math.min(hi, t + window); u += step) if (level(u) < level(best) - 0.5) best = u;
+    return round(best, 3);
+  };
+  return keep.map((k, i) => {
+    const prevOut = i > 0 ? keep[i - 1].out : 0;
+    const nextIn = i < keep.length - 1 ? keep[i + 1].in : duration;
+    const inT = k.in > 0.05 && level(k.in) > -32 ? quietest(k.in, prevOut, k.out - 0.1) : k.in;
+    const outT = k.out < duration - 0.05 && level(k.out) > -32 ? quietest(k.out, inT + 0.1, nextIn) : k.out;
+    return { in: inT, out: outT };
+  });
 }
 
 function pausesFrom(words, silences, minLength = 0.4) {
@@ -113,6 +129,7 @@ export async function transcribeSource(root, rel, { srt, model = "small.en", asr
     .filter((w) => w.text);
 
   const accurate = timing.startsWith("speech-recognition");
+  if (accurate) words = fitToSpeech(words, silences, info.duration);
   const fillers = flagFillers(words);
   const stutters = findRetakes(words);
   const restarts = findRestarts(words);
@@ -137,8 +154,12 @@ export async function transcribeSource(root, rel, { srt, model = "small.en", asr
   // Suggested cut: retakes and certain fillers out (only with exact timings), pauses shortened.
   const drop = new Set();
   if (accurate) flags.forEach((f, i) => (f === "retake" || f === "filler") && drop.add(i));
-  const keep = planCuts(words, info.duration, { maxPause: 0.4, drop });
-  const runtime = keep.reduce((s, k) => s + (k.end - k.start), 0);
+  let keep = planCuts(words, info.duration, { maxPause: 0.4, drop }).map((k) => ({ in: k.start, out: k.end }));
+  // cuts that fall mid-speech (around a removed retake) move to the quietest
+  // moment nearby: the gap between two words
+  const energy = await frameEnergy(wav, 0.01);
+  keep = snapEdgesToQuiet(keep, energy, info.duration);
+  const runtime = keep.reduce((s, k) => s + (k.out - k.in), 0);
 
   return {
     source: rel,
@@ -151,7 +172,7 @@ export async function transcribeSource(root, rel, { srt, model = "small.en", asr
     words: words.map((w, i) => ({ i, ...w, ...(flags[i] ? { flag: flags[i] } : {}) })),
     pauses: pausesFrom(words, silences),
     retakes,
-    suggestedKeep: keep.map((k) => ({ in: k.start, out: k.end })),
+    suggestedKeep: keep,
     suggestedRuntime: round(runtime, 2),
     note: accurate ? undefined : "Timings are estimated, so fillers and retakes are flagged but not cut in suggestedKeep.",
   };

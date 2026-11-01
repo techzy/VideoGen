@@ -452,7 +452,8 @@ export async function buildComposition(root, { format: formatOverride, log = () 
   });
 
   // music + sfx
-  const speech = words.map((w) => ({ start: w.start, end: w.end }));
+  // ducking follows the speech itself, whether or not captions are shown
+  const speech = captionWords(timeline.cuts.map((c) => ({ ...c, caption: "auto", opts: {} })), transcript, { skipFillers: false }).map((w) => ({ start: w.start, end: w.end }));
   const audioEls = [];
   timeline.audio.forEach((a, i) => {
     const dur = round(a.end - a.start);
@@ -521,6 +522,7 @@ ${rootScript.map((l) => "  " + l).join("\n")}
     brolls: timeline.brolls.length,
     overlays: timeline.overlays.length,
     audio: timeline.audio.length,
+    captionsEnabled: Boolean(style.captions.enabled),
     captionWords: words.length,
     captionGroups,
     warnings,

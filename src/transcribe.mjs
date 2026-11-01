@@ -37,7 +37,8 @@ export async function transcribeWords(audioFile, workDir, { model = "small.en" }
     ({ stdout } = await run(
       process.execPath,
       [hyperframesBin(), "transcribe", audioFile, "--dir", workDir, "--model", model, "--language", "en", "--json"],
-      { cwd: workDir, env: { HYPERFRAMES_NO_UPDATE_CHECK: "1" } },
+      // NODE_USE_ENV_PROXY: let the model download honour HTTPS_PROXY when one is set
+      { cwd: workDir, env: { HYPERFRAMES_NO_UPDATE_CHECK: "1", NODE_USE_ENV_PROXY: "1" } },
     ));
   } catch (e) {
     throw new Error(lastJson(e.stdout).error || e.message.split("\n")[0]);

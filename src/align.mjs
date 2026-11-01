@@ -154,6 +154,66 @@ export function alignFromCues(srtWords, cues, silences) {
   return out.map((w) => ({ ...w, timed: false }));
 }
 
+/**
+ * Re-time words onto the measured speech. Whisper's word times can be off by
+ * 0.3–0.5 s and land inside pauses; the audio's pauses are exact. Dynamic
+ * programming gives each stretch of speech a run of consecutive words
+ * (possibly none: a breath), spreading them by syllables, and picks the
+ * split that stays closest to Whisper's times at a natural speaking rate.
+ */
+export function fitToSpeech(words, silences, duration) {
+  const speech = speechIntervals(0, duration, silences).filter((iv) => iv.end - iv.start >= 0.06);
+  const n = words.length;
+  const k = speech.length;
+  if (!n || !k) return words;
+  const syl = words.map((w) => syllables(w.text));
+  const pre = [0];
+  syl.forEach((s, i) => pre.push(pre[i] + s));
+  const guide = words.map((w) => (w.start + w.end) / 2);
+  const MAX_RUN = 45;
+  const cost = (j, a, b) => {
+    const { start, end } = speech[j];
+    const dur = end - start;
+    if (a === b) return 1.5 * dur; // speech with no words: allowed (breath, noise), not free
+    const S = pre[b] - pre[a];
+    let c = 0;
+    for (let m = a; m < b; m++) {
+      const placed = start + ((pre[m] - pre[a] + syl[m] / 2) / S) * dur;
+      c += (guide[m] - placed) ** 2;
+    }
+    const rate = S / dur;
+    return c + 0.5 * Math.log(rate / 4.5) ** 2 * (b - a);
+  };
+  const dp = Array.from({ length: k + 1 }, () => new Float64Array(n + 1).fill(Infinity));
+  const back = Array.from({ length: k + 1 }, () => new Int32Array(n + 1));
+  dp[0][0] = 0;
+  for (let j = 0; j < k; j++) {
+    for (let i = 0; i <= n; i++) {
+      if (dp[j][i] === Infinity) continue;
+      for (let e = i; e <= Math.min(n, i + MAX_RUN); e++) {
+        const v = dp[j][i] + cost(j, i, e);
+        if (v < dp[j + 1][e]) {
+          dp[j + 1][e] = v;
+          back[j + 1][e] = i;
+        }
+      }
+    }
+  }
+  if (dp[k][n] === Infinity) return words;
+  const out = words.map((w) => ({ ...w }));
+  for (let j = k, e = n; j > 0; j--) {
+    const a = back[j][e];
+    const { start, end } = speech[j - 1];
+    const S = pre[e] - pre[a];
+    for (let m = a; m < e; m++) {
+      out[m].start = round(start + ((pre[m] - pre[a]) / S) * (end - start));
+      out[m].end = round(start + ((pre[m + 1] - pre[a]) / S) * (end - start));
+    }
+    e = a;
+  }
+  return out;
+}
+
 function speechIntervals(start, end, silences) {
   const ivs = [];
   let t = start;
