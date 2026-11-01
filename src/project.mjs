@@ -4,6 +4,9 @@ import path from "node:path";
 export const MEDIA_DIRS = ["raw", "broll", "reference", "music"];
 const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mts)$/i;
 const AUDIO_EXT = /\.(mp3|wav|m4a|aac|flac|ogg|aif|aiff)$/i;
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
+// photos from iPhones; browsers can't display them, so the EDL rejects them
+const HEIC_EXT = /\.(heic|heif)$/i;
 
 /** Absolute paths for every pipeline file inside a project folder. */
 export function projectPaths(root) {
@@ -35,6 +38,8 @@ export function listMedia(root, dir, { audio = false } = {}) {
 }
 
 export const isAudioFile = (f) => AUDIO_EXT.test(f);
+export const isImageFile = (f) => IMAGE_EXT.test(f);
+export const isHeicFile = (f) => HEIC_EXT.test(f);
 
 /** "1:02.5", "00:01:02,500", "62.5", "62.5s" → seconds. */
 export function parseTime(s) {

@@ -91,22 +91,28 @@ Settings lines above the table: `**Format:** 9:16` (or 16:9, 1:1, 4:5, source) a
 | 1 | 0:00.00 | raw/take1.mp4 | 12.40 → 18.95 | cut | auto | broll/city.mp4 3 → 6 | punchIn | focus=0.45 |
 | 2 | 0:06.55 | raw/take1.mp4 | 21.10 → 25.00 | cut | auto | | none | |
 | 3 | 0:02.00 | broll/desk.mp4 | 0 → 2.5 | broll | | | zoomIn / fadeOut | |
-| 4 | 0:01.00 → 0:03.40 | | | title | "The biggest fear" | icon:warning | slamUp / liftOut | y=0.25 |
-| 5 | 0:00.00 | music/bed.mp3 | 0 → end | music | | | | volume=0.5 duck=0.3 |
+| 4 | 0:04.00 → 0:05.50 | broll/photo.jpg | | broll | | | fadeIn / fadeOut | size=0.6 rotate=-4 border |
+| 5 | 0:01.00 → 0:03.40 | | | title | "The biggest fear" | icon:warning | slamUp / liftOut | y=0.25 |
+| 6 | 0:00.00 | music/bed.mp3 | 0 → end | music | | | | volume=0.5 duck=0.3 |
 
 - **cut**: main footage, played back to back in table order. Out time is computed (a
   mismatch is a warning). Caption: `auto` (from the transcript), `none`, or typed text. Motion
   preset: a framing preset (`none`, `punchIn`, `slowPush`, `slowPull`, `zoomBump`), or
   `alternate` (none/punchIn on alternating cuts). B-roll column: an optional cutaway over this
-  cut, `broll/file.mp4 in → out`.
+  cut, `broll/file.mp4 in → out`, or `broll/photo.jpg` (shown for the whole cut).
 - **broll**: a cutaway from its Out time for its In → Out length. Preset `entry / exit`.
   Muted unless Notes say `keep-audio`.
+- **broll, image** (png, jpg, webp, gif): held over Out time `a → b`; In → Out is ignored.
+  Fills the frame (cropped; `focus=` picks the crop) unless Notes place it: `size=0..1`
+  (fraction of frame width, whole image shown), `x=` / `y=` (centre, 0..1, default 0.5),
+  `rotate=` (degrees), `border` or `border=px` (white photo edge). Later rows stack on top, so
+  overlapping times build a pile. HEIC is rejected: export a JPG copy and use that.
 - **title / text / callout / lower-third**: on-screen text over Out time `a → b`. Caption =
   the text (lower-third: `Name — Role`). B-roll/overlay column: `icon:<name>` draws a line icon
   (see src/icons.mjs). Preset `entry / exit`.
 - **music**: from Out time, ducked under speech automatically. **sfx**: a one-shot at Out time.
 - Notes options: `focus=0..1` (horizontal framing), `scale=1.15`, `y=0..1` (text position),
-  `size=px`, `color=#hex`, `volume=`, `duck=`, `keep-audio`, `no-captions`, `no-fade`.
+  `size=px` (text), `size=` / `x=` / `y=` / `rotate=` / `border` (placed images), `color=#hex`, `volume=`, `duck=`, `keep-audio`, `no-captions`, `no-fade`.
 
 ## Phase 4: build
 

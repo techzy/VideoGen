@@ -3,11 +3,11 @@ import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { parseEdl, resolveEdl } from "./edl.mjs";
+import { parseEdl, resolveEdl, parseInlineBroll } from "./edl.mjs";
 import { readStyle, canvasFor } from "./style.mjs";
-import { probe, probeDuration } from "./media.mjs";
+import { probe, probeDuration, probeImage } from "./media.mjs";
 import { iconSvg, ICON_NAMES } from "./icons.mjs";
-import { projectPaths, readJson, isAudioFile } from "./project.mjs";
+import { projectPaths, readJson, isAudioFile, isImageFile, isHeicFile } from "./project.mjs";
 import { escapeHtml, round } from "./util.mjs";
 
 const require = createRequire(import.meta.url);
@@ -321,14 +321,15 @@ export async function buildComposition(root, { format: formatOverride, log = () 
   const sources = new Set();
   for (const r of edl.rows) {
     if (r.source) sources.add(r.source);
-    const inline = /^\s*([^\s]+\.(?:mp4|mov|m4v|mkv|webm|avi))/i.exec(r.overlay || "")?.[1];
+    const inline = parseInlineBroll(r.overlay)?.source;
     if (inline) sources.add(inline);
   }
   const info = {};
   for (const s of sources) {
     const abs = path.join(P.root, s);
-    if (!fs.existsSync(abs)) continue;
-    info[s] = isAudioFile(s) ? { duration: await probeDuration(abs) } : await probe(abs);
+    // missing and HEIC files are reported by resolveEdl
+    if (!fs.existsSync(abs) || isHeicFile(s)) continue;
+    info[s] = isAudioFile(s) ? { duration: await probeDuration(abs) } : isImageFile(s) ? await probeImage(abs) : await probe(abs);
   }
   const durations = Object.fromEntries(Object.entries(info).map(([k, v]) => [k, v.duration]));
   const { timeline, errors, warnings } = resolveEdl(edl, { root: P.root, durations });
@@ -441,12 +442,35 @@ export async function buildComposition(root, { format: formatOverride, log = () 
   });
   timeline.brolls.forEach((b, i) => {
     const { entry = style.broll.entry, exit = style.broll.exit } = splitPreset(b.preset);
-    const audio = b.opts["keep-audio"] ? ` data-has-audio="true" data-volume="${b.opts.volume ?? 0.5}" data-fade-in="0.05" data-fade-out="0.05"` : " muted";
-    tracks.push(
-      `      <div id="bf${i}" class="frame" style="z-index:2">
-        <video id="broll${i}" class="clip" src="${mediaPath[b.source]}" data-start="${b.start}" data-duration="${round(b.end - b.start)}" data-media-start="${round(b.in)}" data-track-index="1"${audio} playsinline style="${objPos(b)}"></video>
+    const timing = `data-start="${b.start}" data-duration="${round(b.end - b.start)}" data-track-index="1"`;
+    if (b.still && b.place) {
+      // placed still: the whole image at size × frame width, centred on x/y; the frame pivots on
+      // that centre so entry/exit presets scale and turn the card in place
+      const { size = 1, x = 0.5, y = 0.5, rotate = 0, border } = b.place;
+      const { width: iw, height: ih } = info[b.source];
+      const w = round(size * W, 1);
+      const h = round((w * ih) / iw, 1);
+      const bw = border === true ? Math.round(W * 0.02) : border || 0;
+      const card = `left: ${round(x * W - w / 2 - bw, 1)}px; top: ${round(y * H - h / 2 - bw, 1)}px; width: ${w}px; height: ${h}px;${bw ? ` padding: ${bw}px; background: #FFFFFF;` : ""}${rotate ? ` transform: rotate(${rotate}deg);` : ""}`;
+      tracks.push(
+        `      <div id="bf${i}" class="frame" style="z-index:2; transform-origin: ${round(x * 100, 2)}% ${round(y * 100, 2)}%">
+        <img id="broll${i}" class="clip placed" src="${mediaPath[b.source]}" alt="" ${timing} style="${card}">
       </div>`,
-    );
+      );
+    } else if (b.still) {
+      tracks.push(
+        `      <div id="bf${i}" class="frame" style="z-index:2">
+        <img id="broll${i}" class="clip" src="${mediaPath[b.source]}" alt="" ${timing} style="${objPos(b)}">
+      </div>`,
+      );
+    } else {
+      const audio = b.opts["keep-audio"] ? ` data-has-audio="true" data-volume="${b.opts.volume ?? 0.5}" data-fade-in="0.05" data-fade-out="0.05"` : " muted";
+      tracks.push(
+        `      <div id="bf${i}" class="frame" style="z-index:2">
+        <video id="broll${i}" class="clip" src="${mediaPath[b.source]}" ${timing} data-media-start="${round(b.in)}"${audio} playsinline style="${objPos(b)}"></video>
+      </div>`,
+      );
+    }
     rootScript.push(`      M.in[${JSON.stringify(entry)}](tl, $("#bf${i}"), ${b.start});`);
     if (exit !== "cut") rootScript.push(`      M.out[${JSON.stringify(exit)}](tl, $("#bf${i}"), ${round(Math.max(b.start + 0.2, b.end - (names.outDuration[exit] ?? 0.2)))});`);
   });
@@ -484,7 +508,8 @@ ${fontCss}
       html, body { margin: 0; width: ${W}px; height: ${H}px; overflow: hidden; background: ${style.background}; }
       #root { position: relative; width: ${W}px; height: ${H}px; overflow: hidden; }
       .frame { position: absolute; left: 0; top: 0; width: ${W}px; height: ${H}px; overflow: hidden; transform-origin: 50% 40%; }
-      .frame video { position: absolute; left: 0; top: 0; width: ${W}px; height: ${H}px; object-fit: cover; }
+      .frame video, .frame img { position: absolute; left: 0; top: 0; width: ${W}px; height: ${H}px; object-fit: cover; }
+      .frame img.placed { object-fit: fill; box-sizing: content-box; }
     </style>
   </head>
   <body>
