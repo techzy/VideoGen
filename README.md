@@ -25,9 +25,12 @@ Requires Node.js 22+ and FFmpeg.
 ```bash
 git clone https://github.com/techzy/VideoGen && cd VideoGen
 npm install
-npm link        # puts `vg` on your PATH
-vg setup        # links the /edit-video skill into ~/.claude/skills, installs headless Chrome
+npm link
+vg setup
 ```
+
+`npm link` puts `vg` on your PATH; `vg setup` links the /edit-video skill into
+`~/.claude/skills` and installs headless Chrome.
 
 The first `vg transcribe` downloads a Whisper model (`small.en` is about
 470 MB; `--model base.en` is smaller, `medium.en` is more accurate).
@@ -35,11 +38,14 @@ The first `vg transcribe` downloads a Whisper model (`small.en` is about
 ## Use
 
 ```bash
-vg init my-video          # raw/ broll/ reference/ music/ brief.md CHANGELOG.md
-# add your files, fill in brief.md, then in that folder:
+vg init my-video
+cd my-video
 claude
 > /edit-video
 ```
+
+`vg init` creates `raw/ broll/ reference/ music/ brief.md CHANGELOG.md`. Add
+your files and fill in brief.md before running `/edit-video`.
 
 Claude reads brief.md (and asks if it is vague), then:
 
