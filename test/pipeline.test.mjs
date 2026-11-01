@@ -109,12 +109,14 @@ test("resolveEdl lays out the timeline and reports problems", () => {
 | 2 | 0:09 | raw/a.mp4 | 4 → 5.5 | cut | auto | | | |
 | 3 | 0:01 → 0:02.5 | | | text | Hi | | | |
 | 4 | 0:00 | raw/missing.mp4 | 0 → 1 | cut | | | | |
+| 5 | 0:00 → end | | | title | Stays up | | none / none | |
 `);
   const { timeline, errors, warnings } = resolveEdl(edl, { root, durations: { "raw/a.mp4": 6, "broll/b.mp4": 3 } });
   assert.equal(timeline.duration, 3.5);
   assert.equal(timeline.cuts[1].start, 2);
   assert.equal(timeline.brolls[0].end, 1);
   assert.equal(timeline.overlays[0].end, 2.5);
+  assert.equal(timeline.overlays[1].end, 3.5, "→ end runs to the end of the edit");
   assert.ok(errors.some((e) => e.includes("missing.mp4")));
   assert.ok(warnings.some((w) => w.includes("differs from the computed")));
   fs.rmSync(root, { recursive: true, force: true });

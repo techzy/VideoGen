@@ -209,7 +209,8 @@ export function resolveEdl(edl, { root, durations }) {
       const end = Math.min(total, r.start + (outT - inT));
       brolls.push({ ...r, in: inT, out: inT + (end - r.start), end: round(end) });
     } else if (OVERLAY_TYPES.includes(r.type)) {
-      const end = Number.isFinite(r.end) ? r.end : Number.isFinite(r.out) && Number.isFinite(r.in) ? r.start + (r.out - r.in) : r.start + 2.5;
+      const end =
+        r.end === Infinity ? total : Number.isFinite(r.end) ? r.end : Number.isFinite(r.out) && Number.isFinite(r.in) ? r.start + (r.out - r.in) : r.start + 2.5;
       if (!r.caption && !r.overlay) warnings.push(`${at(r)}: ${r.type} has no text (Caption column)`);
       overlays.push({ ...r, end: round(Math.min(end, total)) });
     } else if (r.type === "music" || r.type === "sfx") {
