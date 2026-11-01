@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parseTime, fmtTime } from "./project.mjs";
+import { parseTime, fmtTime, isImageFile, isHeicFile } from "./project.mjs";
 import { round } from "./util.mjs";
 
 /*
  * The EDL is a markdown table a person edits. Columns are found by header
  * name, so their order can change. Row types:
  *   cut     main footage, played back to back in table order (Out time is computed)
- *   broll   a cutaway over the main footage, starting at Out time
+ *   broll   a cutaway over the main footage, starting at Out time; an image
+ *           (png/jpg/webp/gif) is held over Out time "a → b"
  *   text / title / callout / lower-third   on-screen text over Out time "a → b"
  *   music   background track from Out time; ducks under speech
  *   sfx     a sound effect at Out time
@@ -63,7 +64,7 @@ export function parseOptions(notes) {
   const opts = {};
   for (const m of String(notes || "").matchAll(/\b([a-z][\w-]*)(?:=([^\s,;]+))?/gi)) {
     if (m[2] != null) opts[m[1].toLowerCase()] = m[2];
-    else if (/^(keep-audio|mute|loop|no-captions|no-fade)$/i.test(m[1])) opts[m[1].toLowerCase()] = true;
+    else if (/^(keep-audio|mute|loop|no-captions|no-fade|border)$/i.test(m[1])) opts[m[1].toLowerCase()] = true;
   }
   return opts;
 }
@@ -135,10 +136,10 @@ export function parseEdl(text) {
   return { settings: parseSettings(lines.slice(0, headerLine).join("\n")), rows };
 }
 
-/** "broll/city.mp4 3→6.5" in a cut row's B-roll column. */
+/** "broll/city.mp4 3→6.5" or "broll/photo.jpg" in a cut row's B-roll column. */
 export function parseInlineBroll(s) {
   if (!s) return null;
-  const m = s.match(/^\s*([^\s]+\.(?:mp4|mov|m4v|mkv|webm|avi))\s*(.*)$/i);
+  const m = s.match(/^\s*([^\s]+\.(?:mp4|mov|m4v|mkv|webm|avi|png|jpe?g|webp|gif|heic|heif))\s*(.*)$/i);
   if (!m) return null;
   const [a, b] = parseRange(m[2]);
   return { source: m[1], in: Number.isFinite(a) ? a : 0, out: b };
@@ -156,7 +157,21 @@ export function resolveEdl(edl, { root, durations }) {
   const checkSource = (r, src) => {
     if (!src) return errors.push(`${at(r)}: no Source`), false;
     if (!fs.existsSync(path.join(root, src))) return errors.push(`${at(r)}: ${src} not found`), false;
+    if (isHeicFile(src))
+      return errors.push(`${at(r)}: ${src} is HEIC, which browsers can't display. Export a JPG copy (Preview: File → Export → JPEG) next to it and use that`), false;
     return true;
+  };
+  // placement for stills: size (fraction of frame width), x/y (centre, 0..1), rotate (deg), border (px)
+  const placement = (r) => {
+    const p = {};
+    for (const k of ["size", "x", "y", "rotate", "border"]) {
+      if (r.opts[k] == null) continue;
+      const v = k === "border" && r.opts[k] === true ? true : Number(r.opts[k]);
+      if (v !== true && !Number.isFinite(v)) errors.push(`${at(r)}: ${k}=${r.opts[k]} is not a number`);
+      else p[k] = v;
+    }
+    if (p.size != null && !(p.size > 0)) errors.push(`${at(r)}: size must be above 0 (a fraction of the frame width)`);
+    return Object.keys(p).length ? p : null;
   };
 
   const cuts = [];
@@ -181,7 +196,12 @@ export function resolveEdl(edl, { root, durations }) {
       t = cut.end;
       cuts.push(cut);
       const inline = parseInlineBroll(r.overlay);
-      if (inline && checkSource(r, inline.source)) {
+      if (!inline || !checkSource(r, inline.source)) continue;
+      if (isImageFile(inline.source)) {
+        // a still covers the whole cut
+        if (Number.isFinite(inline.out)) warnings.push(`${at(r)}: ${inline.source} is an image; it shows for the whole cut, so its range is ignored`);
+        brolls.push({ ...r, source: inline.source, still: true, place: placement(r), in: 0, out: 0, start: cut.start, end: cut.end, preset: r.opts.broll || null });
+      } else {
         const bdur = durationOf(inline.source);
         const len = Math.min(cut.end - cut.start, (Number.isFinite(inline.out) ? inline.out : bdur) - inline.in);
         brolls.push({ ...r, source: inline.source, in: inline.in, out: inline.in + len, start: cut.start, end: round(cut.start + len), preset: r.opts.broll || null });
@@ -196,7 +216,20 @@ export function resolveEdl(edl, { root, durations }) {
       errors.push(`${at(r)}: ${r.type} needs an Out time (when it starts on the edit)`);
       continue;
     }
-    if (r.type === "broll") {
+    if (r.type === "broll" && r.source && isImageFile(r.source)) {
+      if (!checkSource(r, r.source)) continue;
+      if (!(Number.isFinite(r.end) || r.end === Infinity)) {
+        errors.push(`${at(r)}: ${r.source} is an image, so it needs Out time "a → b" (e.g. 0:12.00 → 0:14.50) for how long it shows`);
+        continue;
+      }
+      if (Number.isFinite(r.in) || Number.isFinite(r.out)) warnings.push(`${at(r)}: ${r.source} is an image; In → Out is ignored (Out time "a → b" sets how long it shows)`);
+      const end = Math.min(total, r.end);
+      if (!(end > r.start)) {
+        errors.push(`${at(r)}: Out time ${fmtTime(r.start)} → ${fmtTime(r.end)} is empty`);
+        continue;
+      }
+      brolls.push({ ...r, still: true, place: placement(r), in: 0, out: 0, end: round(end) });
+    } else if (r.type === "broll") {
       if (!checkSource(r, r.source)) continue;
       const dur = durationOf(r.source);
       const inT = Number.isFinite(r.in) ? r.in : 0;

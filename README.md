@@ -65,7 +65,9 @@ Other aspect ratios from the same EDL: `vg render --phone` (9:16) or
 ## The EDL
 
 `plan/edl.md` is a markdown table you can edit by hand. Row types: `cut` (main
-footage, back to back), `broll`, `title` / `text` / `callout` / `lower-third`,
+footage, back to back), `broll` (video, or an image held over Out time
+`a → b` and optionally placed with `size=`, `x=`, `y=`, `rotate=`, `border`),
+`title` / `text` / `callout` / `lower-third`,
 `music` (ducked under speech automatically) and `sfx`. The full format is in
 the skill file.
 
@@ -77,7 +79,8 @@ the skill file.
 |---|---|---|---|---|---|---|---|---|
 | 1 | 0:00.00 | raw/take1.mp4 | 12.40 → 18.95 | cut | auto | broll/city.mp4 3 → 6 | punchIn | focus=0.45 |
 | 2 | 0:01.00 → 0:03.40 | | | title | "The biggest fear" | icon:warning | slamUp / liftOut | y=0.25 |
-| 3 | 0:00.00 | music/bed.mp3 | 0 → end | music | | | | volume=0.5 duck=0.3 |
+| 3 | 0:04.00 → 0:05.50 | broll/photo.jpg | | broll | | | fadeIn / fadeOut | size=0.6 rotate=-4 border |
+| 4 | 0:00.00 | music/bed.mp3 | 0 → end | music | | | | volume=0.5 duck=0.3 |
 ```
 
 ## Motion presets

@@ -25,6 +25,14 @@ export async function probe(file) {
   };
 }
 
+/** Pixel size of a still image (it has no duration). */
+export async function probeImage(file) {
+  const { stdout } = await run("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", file]);
+  const v = JSON.parse(stdout).streams?.[0];
+  if (!v?.width || !v?.height) throw new Error(`Could not read the size of ${file}`);
+  return { duration: null, width: v.width, height: v.height, image: true };
+}
+
 /** Duration of any media file, audio-only included. */
 export async function probeDuration(file) {
   const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file]);

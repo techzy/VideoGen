@@ -172,3 +172,53 @@ test("build writes a HyperFrames composition and rejects unknown presets", async
   await assert.rejects(buildComposition(root), /not a in preset/);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("image b-roll: held over Out time a → b, inline for a whole cut, HEIC rejected", () => {
+  const root = tinyProject();
+  const ff = (args) => execFileSync("ffmpeg", ["-v", "error", "-y", ...args]);
+  ff(["-f", "lavfi", "-i", "testsrc=size=400x300", "-frames:v", "1", path.join(root, "broll", "p.jpg")]);
+  fs.writeFileSync(path.join(root, "broll", "q.heic"), "");
+  const edl = parseEdl(`| # | Out time | Source | In → Out | Type | Caption | B-roll / overlay | Motion preset | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | | raw/a.mp4 | 1 → 3 | cut | auto | broll/p.jpg | | |
+| 2 | | raw/a.mp4 | 4 → 5.5 | cut | auto | | | |
+| 3 | 0:01 → 0:02.5 | broll/p.jpg | | broll | | | | size=0.6 x=0.4 rotate=-4 border |
+| 4 | 0:03 → end | broll/p.jpg | 0 → 9 | broll | | | | |
+| 5 | 0:01 | broll/p.jpg | 0 → 1 | broll | | | | |
+| 6 | 0:01 → 0:02 | broll/q.heic | | broll | | | | |
+| 7 | 0:01 → 0:02 | broll/p.jpg | | broll | | | | size=big |
+`);
+  const { timeline, errors, warnings } = resolveEdl(edl, { root, durations: { "raw/a.mp4": 6 } });
+  const [inline, placed, toEnd] = timeline.brolls;
+  assert.deepEqual([inline.still, inline.start, inline.end, inline.place], [true, 0, 2, null], "inline still covers the whole cut");
+  assert.deepEqual([placed.start, placed.end], [1, 2.5]);
+  assert.deepEqual(placed.place, { size: 0.6, x: 0.4, rotate: -4, border: true });
+  assert.equal(toEnd.end, 3.5, "→ end runs to the end of the edit");
+  assert.ok(warnings.some((w) => w.includes("row 4") && w.includes("In → Out is ignored")));
+  assert.ok(errors.some((e) => e.includes("row 5") && e.includes('needs Out time "a → b"')));
+  assert.ok(errors.some((e) => e.includes("row 6") && e.includes("HEIC")));
+  assert.ok(errors.some((e) => e.includes("row 7") && e.includes("size=big is not a number")));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("build draws stills full-frame or as placed cards", async () => {
+  const root = tinyProject();
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=400x200", "-frames:v", "1", path.join(root, "broll", "p.png")]);
+  fs.writeFileSync(path.join(root, "plan", "edl.md"), `**Format:** 9:16
+
+| # | Out time | Source | In → Out | Type | Caption | B-roll / overlay | Motion preset | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | | raw/a.mp4 | 0 → 4 | cut | auto | | | |
+| 2 | 0:00.5 → 0:01.5 | broll/p.png | | broll | | | fadeIn / fadeOut | focus=0.2 |
+| 3 | 0:02 → 0:03 | broll/p.png | | broll | | | fadeIn / fadeOut | size=0.5 x=0.25 y=0.5 rotate=5 border=10 |
+`);
+  const b = await buildComposition(root);
+  assert.equal(b.brolls, 2);
+  const index = fs.readFileSync(path.join(root, "composition", "index.html"), "utf8");
+  assert.match(index, /<img id="broll0" class="clip" src="assets\/media\/broll__p.png" alt="" data-start="0.5" data-duration="1" data-track-index="1" style="object-position: 20% 50%;">/);
+  // 540 px wide, 270 tall, centred on (270, 960), plus a 10 px border
+  assert.match(index, /<img id="broll1" class="clip placed"[^>]*style="left: -10px; top: 815px; width: 540px; height: 270px; padding: 10px; background: #FFFFFF; transform: rotate\(5deg\);">/);
+  assert.match(index, /id="bf1" class="frame" style="z-index:2; transform-origin: 25% 50%"/);
+  assert.doesNotMatch(index, /<img[^>]*data-media-start/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
