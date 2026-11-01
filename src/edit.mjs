@@ -71,31 +71,3 @@ export function planCuts(words, duration, { maxPause = 0.4, padBefore = 0.08, pa
   }
   return merged.map((s) => ({ start: round(s.start), end: round(s.end) }));
 }
-
-/** Map source times to the edited timeline and keep only the surviving words. */
-export function remapWords(words, segments, drop = new Set()) {
-  const offsets = [];
-  let acc = 0;
-  for (const s of segments) {
-    offsets.push(acc);
-    acc += s.end - s.start;
-  }
-  const map = (t) => {
-    for (let k = 0; k < segments.length; k++) {
-      const s = segments[k];
-      if (t < s.start) return offsets[k];
-      if (t <= s.end) return offsets[k] + (t - s.start);
-    }
-    return acc;
-  };
-  const out = [];
-  words.forEach((w, i) => {
-    if (drop.has(i)) return;
-    out.push({ ...w, start: round(map(w.start)), end: round(map(w.end)) });
-  });
-  return {
-    words: out,
-    duration: round(acc),
-    cutTimes: offsets.slice(1).map((t) => round(t)),
-  };
-}

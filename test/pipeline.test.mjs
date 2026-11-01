@@ -1,19 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { parseSrt, cuesToWords } from "../src/srt.mjs";
 import { alignToAsr, alignFromCues } from "../src/align.mjs";
-import { findRetakes, planCuts, remapWords } from "../src/edit.mjs";
-import { rulePlan, finalizePlan } from "../src/plan.mjs";
-import { groupWords, writeProject } from "../src/compose.mjs";
-
-const SRT = `1
-00:00:00,000 --> 00:00:04,000
-I need to, I need to support my family.
-
-2
-00:00:04,500 --> 00:00:08,000
-Where's the money coming from? Six months, maybe.
-`;
+import { findRetakes, planCuts } from "../src/edit.mjs";
+import { flagFillers, findRestarts } from "../src/transcript.mjs";
+import { parseEdl, parseRange, resolveEdl, draftEdl } from "../src/edl.mjs";
+import { readStyle, canvasFor } from "../src/style.mjs";
+import { buildComposition, captionWords, presetNames } from "../src/build.mjs";
+import { parseTime } from "../src/project.mjs";
 
 const timed = (texts, step = 0.3, gapAt = new Set()) => {
   let t = 0;
@@ -25,116 +23,152 @@ const timed = (texts, step = 0.3, gapAt = new Set()) => {
   });
 };
 
-test("parses SRT cues and words", () => {
-  const cues = parseSrt(SRT);
-  assert.equal(cues.length, 2);
-  assert.equal(cues[1].start, 4.5);
-  const words = cuesToWords(cues);
-  assert.equal(words[0].text, "I");
-  assert.equal(words.at(-1).text, "maybe.");
-  assert.equal(words.at(-1).cue, 1);
-});
+const SRT = `1
+00:00:00,000 --> 00:00:04,000
+I need to, I need to support my family.
 
-test("aligns SRT words to ASR timings despite differences", () => {
-  const srt = cuesToWords(parseSrt(SRT));
+2
+00:00:04,500 --> 00:00:08,000
+Where's the money coming from? Six months, maybe.
+`;
+
+test("SRT parsing and alignment", () => {
+  const cues = parseSrt(SRT);
+  const srt = cuesToWords(cues);
+  assert.equal(cues.length, 2);
   const asr = timed(["i", "need", "to", "i", "need", "to", "support", "my", "families", "where's", "the", "money", "coming", "from", "6", "months", "maybe"]);
   const { words, matchRatio } = alignToAsr(srt, asr);
   assert.ok(matchRatio > 0.8);
-  assert.equal(words.length, srt.length);
-  assert.equal(words[6].start, asr[6].start); // support
-  for (let i = 1; i < words.length; i++) assert.ok(words[i].start >= words[i - 1].start);
+  assert.equal(words[6].start, asr[6].start);
+  const est = alignFromCues(srt, cues, [{ start: 1.8, end: 2.4 }]);
+  assert.ok(est.every((w) => !(w.start < 2.4 && w.end > 1.8)), "estimated words avoid the pause");
 });
 
-test("estimated timings put word boundaries on pauses", () => {
-  const cues = parseSrt(SRT);
-  const words = alignFromCues(cuesToWords(cues), cues, [{ start: 1.8, end: 2.4 }]);
-  assert.ok(words.every((w) => w.end > w.start));
-  assert.ok(words.every((w) => !(w.start < 2.4 && w.end > 1.8)), "no word spans the pause");
-  assert.ok(words.at(-1).end <= 8.0001);
+test("fillers: hesitations are certain, comma-set 'like' is a judgment call", () => {
+  const f = flagFillers(timed(["So", "um", "I", "like", "pizza,", "like,", "a", "lot"]));
+  assert.deepEqual(f, [null, "filler", null, null, null, "filler?", null, null]);
 });
 
-test("finds restarts and stutters", () => {
-  const words = timed(["I", "need", "to,", "I", "need", "to", "support", "You,", "you", "go"]);
-  const drop = findRetakes(words);
-  assert.deepEqual([...drop].sort((a, b) => a - b), [0, 1, 2, 7]);
+test("retakes keep the last take, and complete sentences are never restarts", () => {
+  const stutter = timed(["I", "need", "to,", "I", "need", "to", "support", "You,", "you", "go"]);
+  assert.deepEqual([...findRetakes(stutter)].sort((a, b) => a - b), [0, 1, 2, 7]);
+  const restart = timed(["So", "today", "I", "want", "to—", "so", "today", "I", "want", "to", "talk", "about", "money."]);
+  assert.deepEqual(findRestarts(restart), [{ from: 0, to: 4, kept: 5 }]);
+  const twoSentences = timed("I think that's the biggest fear. I think that's the biggest risk.".split(" "));
+  assert.deepEqual(findRestarts(twoSentences), []);
 });
 
-test("cuts long pauses and remaps word times", () => {
+test("suggested cut shortens long pauses", () => {
   const words = timed(["a", "b", "c", "d"], 0.3, new Set([2]));
-  const segments = planCuts(words, 3, { maxPause: 0.4 });
-  assert.equal(segments.length, 2);
-  const { words: out, duration, cutTimes } = remapWords(words, segments);
-  assert.equal(cutTimes.length, 1);
-  assert.ok(duration < 3);
-  assert.ok(out[2].start - out[1].end < 0.5, "pause shortened");
+  assert.equal(planCuts(words, 3, { maxPause: 0.4 }).length, 2);
 });
 
-test("rule plan yields valid, non-overlapping beats", () => {
-  const words = timed("I think school is the biggest risk. Where is the money coming from? Six months to make money. Then work forever.".split(" "), 0.35);
-  const plan = finalizePlan(rulePlan(words), words, words.at(-1).end + 0.5);
-  assert.ok(plan.hook.text.length > 0);
-  assert.ok(plan.beats.length >= 2);
-  for (let i = 1; i < plan.beats.length; i++) assert.ok(plan.beats[i].start >= plan.beats[i - 1].end);
-  assert.ok(plan.beats.some((b) => b.template === "counter" && b.value === 6));
+test("time and range parsing", () => {
+  assert.equal(parseTime("1:02.5"), 62.5);
+  assert.equal(parseTime("00:01:02,500"), 62.5);
+  assert.deepEqual(parseRange("12.4 → 15"), [12.4, 15]);
+  assert.deepEqual(parseRange("0:12-0:15.5"), [12, 15.5]);
+  assert.deepEqual(parseRange("3 to end"), [3, Infinity]);
+  assert.ok(Number.isNaN(parseRange("—")[0]));
 });
 
-test("finalizePlan drops malformed AI beats", () => {
-  const words = timed(Array.from({ length: 40 }, (_, i) => `w${i}`));
-  const plan = finalizePlan(
-    {
-      hook: { text: "hi" },
-      emphasis: [1, 999],
-      beats: [
-        { startWord: 5, endWord: 9, template: "versus", headline: "", left: { label: "A", icon: "work" }, right: null },
-        { startWord: 10, endWord: 14, template: "nope", headline: "x" },
-        { startWord: 15, endWord: 20, template: "icon_title", headline: "ok", icon: "not-an-icon" },
-      ],
-    },
-    words,
-    13,
-  );
-  assert.equal(plan.beats.length, 1);
-  assert.equal(plan.beats[0].icon, "idea");
-  assert.deepEqual([...plan.emphasis], [1]);
+test("EDL parsing: settings, columns by name, options", () => {
+  const edl = parseEdl(`# EDL
+**Format:** 9:16
+**Target length:** 45s
+
+| Type | # | Source | In → Out | Out time | Caption | B-roll / overlay | Motion preset | Notes |
+|---|---|---|---|---|---|---|---|---|
+| cut | 1 | raw/a.mp4 | 1 → 3 |  | auto | broll/b.mp4 0 → 1 | punchIn | focus=0.4 |
+| title | 2 |  |  | 0:00.5 → 0:02 | "Hello" | icon:money | slamUp / liftOut | y=0.2 |
+`);
+  assert.equal(edl.settings.format, "9:16");
+  assert.equal(edl.settings.targetSeconds, 45);
+  assert.equal(edl.rows[0].type, "cut");
+  assert.equal(edl.rows[0].opts.focus, "0.4");
+  assert.equal(edl.rows[1].caption, "Hello");
+  assert.equal(edl.rows[1].end, 2);
 });
 
-test("caption groups stay short", () => {
-  const words = timed("one two three four five six seven. eight nine".split(" "));
-  for (const g of groupWords(words)) assert.ok(g.length <= 3);
+function tinyProject() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vg-test-"));
+  for (const d of ["raw", "broll", "analysis", "plan"]) fs.mkdirSync(path.join(root, d));
+  const ff = (args) => execFileSync("ffmpeg", ["-v", "error", "-y", ...args]);
+  ff(["-f", "lavfi", "-i", "testsrc2=size=320x568:rate=30", "-f", "lavfi", "-i", "sine=f=300", "-t", "6", "-pix_fmt", "yuv420p", "-shortest", path.join(root, "raw", "a.mp4")]);
+  ff(["-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "3", "-pix_fmt", "yuv420p", path.join(root, "broll", "b.mp4")]);
+  const words = timed("Hello there this is a test of the captions".split(" "), 0.5).map((w, i) => ({ i, ...w }));
+  fs.writeFileSync(path.join(root, "analysis", "transcript.json"), JSON.stringify({ version: 1, sources: [{ source: "raw/a.mp4", words, suggestedKeep: [{ in: 0, out: 2 }, { in: 2.5, out: 5 }], retakes: [] }] }));
+  return root;
+}
+
+test("resolveEdl lays out the timeline and reports problems", () => {
+  const root = tinyProject();
+  const edl = parseEdl(`| # | Out time | Source | In → Out | Type | Caption | B-roll / overlay | Motion preset | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | | raw/a.mp4 | 1 → 3 | cut | auto | broll/b.mp4 0 → 1 | | |
+| 2 | 0:09 | raw/a.mp4 | 4 → 5.5 | cut | auto | | | |
+| 3 | 0:01 → 0:02.5 | | | text | Hi | | | |
+| 4 | 0:00 | raw/missing.mp4 | 0 → 1 | cut | | | | |
+| 5 | 0:00 → end | | | title | Stays up | | none / none | |
+`);
+  const { timeline, errors, warnings } = resolveEdl(edl, { root, durations: { "raw/a.mp4": 6, "broll/b.mp4": 3 } });
+  assert.equal(timeline.duration, 3.5);
+  assert.equal(timeline.cuts[1].start, 2);
+  assert.equal(timeline.brolls[0].end, 1);
+  assert.equal(timeline.overlays[0].end, 2.5);
+  assert.equal(timeline.overlays[1].end, 3.5, "→ end runs to the end of the edit");
+  assert.ok(errors.some((e) => e.includes("missing.mp4")));
+  assert.ok(warnings.some((w) => w.includes("differs from the computed")));
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
-test("writes a HyperFrames project", async () => {
-  const fs = await import("node:fs");
-  const os = await import("node:os");
-  const path = await import("node:path");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vg-test-"));
-  const footage = path.join(dir, "f.mp4");
-  fs.writeFileSync(footage, "");
-  const words = timed("Where is the money coming from? Six months.".split(" "), 1.2);
-  const theme = JSON.parse(fs.readFileSync(new URL("../brand.json", import.meta.url), "utf8"));
-  const plan = finalizePlan(
-    {
-      hook: { text: "Money" },
-      emphasis: [3],
-      beats: [
-        { startWord: 0, endWord: 5, template: "versus", headline: "", left: { label: "Job", icon: "work" }, right: { label: "Startup", icon: "rocket" } },
-        { startWord: 6, endWord: 7, template: "counter", headline: "6 months", value: 6, unit: "months" },
-      ],
-    },
-    words,
-    10,
-  );
-  assert.equal(plan.beats.length, 2);
-  const project = path.join(dir, "project");
-  writeProject(project, { footage, words, plan, duration: 10, cutTimes: [2.5], theme });
-  const index = fs.readFileSync(path.join(project, "index.html"), "utf8");
-  assert.match(index, /data-composition-src="compositions\/captions.html"/);
-  assert.match(index, /window.__timelines\["main"\]/);
-  for (const f of ["captions.html", "hook.html", "beat-01.html", "beat-02.html"]) {
-    const html = fs.readFileSync(path.join(project, "compositions", f), "utf8");
-    assert.match(html, /^<template>/);
-    assert.match(html, /window.__timelines\["/);
-  }
-  assert.ok(fs.existsSync(path.join(project, "assets", "gsap.min.js")));
+test("captions map transcript words onto the edit and skip fillers", () => {
+  const transcript = { sources: [{ source: "raw/a.mp4", words: [{ text: "um", start: 1, end: 1.2, flag: "filler" }, { text: "hi", start: 1.3, end: 1.6 }, { text: "cut", start: 2.2, end: 2.5 }] }] };
+  const cuts = [{ source: "raw/a.mp4", in: 1, out: 2, start: 5, end: 6, caption: "auto", opts: {} }];
+  assert.deepEqual(captionWords(cuts, transcript), [{ text: "hi", cut: 0, start: 5.3, end: 5.6 }]);
+});
+
+test("style block and canvas", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vg-style-"));
+  const f = path.join(dir, "style.md");
+  fs.writeFileSync(f, '# Style\n\n```json vg-style\n{ "captions": { "maxWords": 2 } }\n```\n');
+  const { style, found } = readStyle(f);
+  assert.ok(found);
+  assert.equal(style.captions.maxWords, 2);
+  assert.equal(style.captions.font, "Inter");
+  assert.deepEqual(canvasFor("9:16"), { width: 1080, height: 1920, format: "9:16" });
+  assert.equal(canvasFor("source", { width: 1920, height: 1080 }).width, 1920);
+  assert.equal(canvasFor("source", { width: 608, height: 1080 }).height, 1918);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("motion template exposes the documented presets", () => {
+  const names = presetNames(new URL("../templates/motion.js", import.meta.url).pathname);
+  for (const n of ["cut", "slamUp", "popIn", "zoomIn", "wordStagger", "drawOn"]) assert.ok(names.in.includes(n), n);
+  for (const n of ["fadeOut", "liftOut"]) assert.ok(names.out.includes(n), n);
+  for (const n of ["none", "punchIn", "slowPush"]) assert.ok(names.frame.includes(n), n);
+});
+
+test("build writes a HyperFrames composition and rejects unknown presets", async () => {
+  const root = tinyProject();
+  const transcript = JSON.parse(fs.readFileSync(path.join(root, "analysis", "transcript.json"), "utf8"));
+  fs.writeFileSync(path.join(root, "plan", "edl.md"), draftEdl(transcript, { format: "9:16", target: 4 }));
+  const b = await buildComposition(root);
+  assert.equal(b.canvas.height, 1920);
+  assert.equal(b.cuts, 2);
+  const index = fs.readFileSync(path.join(root, "composition", "index.html"), "utf8");
+  assert.match(index, /data-media-start="2.5"/);
+  assert.match(index, /data-fade-in="0.02"/);
+  assert.ok(fs.lstatSync(path.join(root, "composition", "assets", "media", "raw__a.mp4")).isSymbolicLink());
+  assert.ok(fs.existsSync(path.join(root, "composition", "compositions", "captions.html")));
+
+  // motion.js is kept between builds
+  const motion = path.join(root, "composition", "styles", "motion.js");
+  fs.appendFileSync(motion, "\n// tuned\n");
+  await buildComposition(root);
+  assert.match(fs.readFileSync(motion, "utf8"), /\/\/ tuned/);
+
+  fs.appendFileSync(path.join(root, "plan", "edl.md"), "| 9 | 0:01 → 0:02 |  |  | title | Hi |  | nope |  |\n");
+  await assert.rejects(buildComposition(root), /not a in preset/);
+  fs.rmSync(root, { recursive: true, force: true });
 });

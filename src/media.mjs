@@ -12,7 +12,6 @@ export async function probe(file) {
   const v = info.streams.find((s) => s.codec_type === "video");
   const a = info.streams.find((s) => s.codec_type === "audio");
   if (!v) throw new Error(`${file} has no video stream`);
-  if (!a) throw new Error(`${file} has no audio stream`);
   const [num, den] = v.r_frame_rate.split("/").map(Number);
   let rotation = Number(v.tags?.rotate ?? v.side_data_list?.find((s) => s.rotation != null)?.rotation ?? 0);
   // ffmpeg auto-rotates on decode, so report the displayed size
@@ -22,19 +21,24 @@ export async function probe(file) {
     width: swap ? v.height : v.width,
     height: swap ? v.width : v.height,
     fps: den ? num / den : 30,
+    hasAudio: Boolean(a),
   };
+}
+
+/** Duration of any media file, audio-only included. */
+export async function probeDuration(file) {
+  const { stdout } = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file]);
+  const d = Number(stdout.trim());
+  if (!Number.isFinite(d)) throw new Error(`Could not read the duration of ${file}`);
+  return d;
 }
 
 export async function extractAudio(video, outWav) {
   await run("ffmpeg", ["-v", "error", "-y", "-i", video, "-vn", "-ac", "1", "-ar", "16000", outWav]);
 }
 
-/**
- * Find pauses from 20 ms frame energy. The threshold sits between the
- * noise floor and typical speech level, so a car, a noisy room and a quiet
- * studio all work without tuning.
- */
-export async function detectSilences(file, { minDuration = 0.18 } = {}) {
+/** Loudness (dBFS) of the audio in fixed frames: { step, db[] }. */
+export async function frameEnergy(file, step = 0.02) {
   const rate = 16000;
   const pcm = await new Promise((resolve, reject) => {
     const chunks = [];
@@ -44,13 +48,23 @@ export async function detectSilences(file, { minDuration = 0.18 } = {}) {
     child.on("close", (code) => (code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error("ffmpeg could not decode the audio"))));
   });
   const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.length / 2));
-  const hop = rate * 0.02;
+  const hop = Math.round(rate * step);
   const db = [];
   for (let i = 0; i + hop <= samples.length; i += hop) {
     let sum = 0;
     for (let k = i; k < i + hop; k++) sum += samples[k] * samples[k];
     db.push(10 * Math.log10(sum / hop / 32768 ** 2 + 1e-12));
   }
+  return { step, db };
+}
+
+/**
+ * Find pauses from 20 ms frame energy. The threshold sits between the
+ * noise floor and typical speech level, so a car, a noisy room and a quiet
+ * studio all work without tuning.
+ */
+export async function detectSilences(file, { minDuration = 0.18 } = {}) {
+  const { db } = await frameEnergy(file, 0.02);
   if (!db.length) return [];
   // light smoothing so single quiet frames inside words don't count
   const sm = db.map((_, i) => {
@@ -75,35 +89,4 @@ export async function detectSilences(file, { minDuration = 0.18 } = {}) {
   });
   if (open != null && (sm.length - open) * 0.02 >= minDuration) silences.push({ start: round(open * 0.02), end: Infinity });
   return silences;
-}
-
-/**
- * Cut the kept segments out of the source, scale/crop to the canvas and
- * re-encode with a keyframe every second (HyperFrames seeks frame by frame).
- */
-export async function renderCut(input, segments, out, { width, height, fps }) {
-  const parts = [];
-  const labels = [];
-  const fade = 0.012; // tiny audio fades hide clicks at each cut
-  segments.forEach((seg, i) => {
-    const d = seg.end - seg.start;
-    parts.push(
-      `[0:v]trim=start=${round(seg.start)}:end=${round(seg.end)},setpts=PTS-STARTPTS,` +
-        `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},setsar=1,fps=${fps}[v${i}]`,
-      `[0:a]atrim=start=${round(seg.start)}:end=${round(seg.end)},asetpts=PTS-STARTPTS,` +
-        `afade=t=in:d=${fade},afade=t=out:st=${round(Math.max(0, d - fade))}:d=${fade}[a${i}]`,
-    );
-    labels.push(`[v${i}][a${i}]`);
-  });
-  parts.push(`${labels.join("")}concat=n=${segments.length}:v=1:a=1[v][a]`);
-  await run("ffmpeg", [
-    "-v", "error", "-y", "-i", input,
-    "-filter_complex", parts.join(";"),
-    "-map", "[v]", "-map", "[a]",
-    "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
-    "-g", String(Math.round(fps)), "-keyint_min", String(Math.round(fps)),
-    "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
-    "-movflags", "+faststart",
-    out,
-  ]);
 }

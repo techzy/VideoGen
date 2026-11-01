@@ -1,83 +1,98 @@
-# VideoGen
+# VideoGen: AI-assisted video edit pipeline
 
-Give it a video of you talking and its SRT transcript; it makes a 9:16 short with
-word-synced captions and animated vector graphics, rendered with
+Claude Code edits raw footage + b-roll into a finished video in the style of
+your reference videos, built and rendered with
 [HyperFrames](https://github.com/heygen-com/hyperframes).
 
-```bash
-videogen --video talking.mp4 --srt talking.srt --out short.mp4
-```
+The loop is **analyze → plan → approve → build → preview → revise → render**,
+with two approval gates: the style spec (Gate 1) and the edit decision list
+(Gate 2). Every decision lives in readable files: `analysis/style.md`,
+`plan/edl.md` and `composition/styles/motion.js`.
 
-## What it does
+Two parts:
 
-1. **Times every word.** Your SRT is the wording. Local speech recognition
-   (Whisper, through `hyperframes transcribe`) supplies the timing, and the two
-   are aligned word by word. If speech recognition is unavailable, the tool
-   estimates timings from the SRT cues and the pauses in the audio. Those
-   estimates are less exact (up to about a second off inside long cues).
-2. **Edits.** Pauses longer than 0.4 s are shortened. Restarts and stutters
-   ("I need to, I need to…", "You, you…") are cut, but only when the word
-   timings come from speech recognition. The framing alternates between two
-   zoom levels at every cut (punch-ins), so the jump cuts read as deliberate.
-3. **Plans the graphics.** With `ANTHROPIC_API_KEY` set, Claude picks the
-   moments, headlines, icons and emphasized words. Without a key, keyword rules
-   do it.
-4. **Builds a HyperFrames project.** It contains:
-   - a hook title on the first frame
-   - captions that highlight each word as it's spoken
-   - graphic beats in the top third of the frame, above your head
-   - the edited footage underneath
-
-   Everything is SVG or CSS shapes and text, animated with GSAP. No stock
-   images or other raster art.
-5. **Renders** to MP4 at 1080×1920, 30 fps.
-
-Graphic templates: `icon_title` (a line icon draws itself, then a headline
-lands), `big_word` (kinetic letters with an underline swoosh), `counter` (a
-number counts up inside a ring) and `versus` (two options face off). The
-24 line icons are in `src/icons.mjs`.
+- **`/edit-video`**, a Claude Code skill (`.claude/skills/edit-video/SKILL.md`)
+  that runs the pipeline and stops at the gates.
+- **`vg`**, helper commands that do the mechanical work: frames and contact
+  sheets, pacing measured from cut detection, the word-level transcript with
+  fillers/retakes/pauses flagged, the b-roll index, building the HyperFrames
+  composition from the EDL, QA, and rendering.
 
 ## Setup
 
 Requires Node.js 22+ and FFmpeg.
 
 ```bash
+git clone https://github.com/techzy/VideoGen && cd VideoGen
 npm install
-npx hyperframes browser ensure     # one-time: headless Chrome for rendering
-npm link                           # optional: puts `videogen` on your PATH
+npm link        # puts `vg` on your PATH
+vg setup        # links the /edit-video skill into ~/.claude/skills, installs headless Chrome
 ```
 
-On first run the tool creates `.env` (git-ignored) with an empty
-`ANTHROPIC_API_KEY=`. Fill it in to have Claude plan the graphics.
+The first `vg transcribe` downloads a Whisper model (`small.en` is about
+470 MB; `--model base.en` is smaller, `medium.en` is more accurate).
 
-The first run with speech recognition downloads the Whisper model (about 470 MB
-for `small.en`; use `--whisper base.en` for a smaller, faster one).
+## Use
 
-## Options
+```bash
+vg init my-video          # raw/ broll/ reference/ music/ brief.md CHANGELOG.md
+# add your files, fill in brief.md, then in that folder:
+claude
+> /edit-video
+```
 
-| Option | |
-| --- | --- |
-| `--out <file>` | Output MP4 (default: `<video>-short.mp4` next to the input) |
-| `--quality draft\|looks\|delivery` | Render quality (default `looks`) |
-| `--work <dir>` | Keep the working files: the HyperFrames project, `plan.json`, `scene-plan.json` |
-| `--plan <file>` | Re-use a `scene-plan.json`, for example after editing headlines by hand |
-| `--no-render` | Only build the project; open it with `npx hyperframes preview` inside `<work>/project` |
-| `--brand <file>` | Brand theme (default `brand.json`) |
-| `--whisper <model>` | `tiny.en`, `base.en`, `small.en` (default), `medium.en` |
-| `--no-asr` | Skip speech recognition and estimate the timings |
-| `--no-ai` | Skip Claude and use the built-in rules |
-| `--keep-pauses`, `--keep-retakes`, `--max-pause <s>` | Editing controls |
+Claude reads brief.md (and asks if it is vague), then:
 
-To tweak a video: run with `--work my-run`, edit `my-run/scene-plan.json`
-(word indices are listed at the bottom), then rerun with
-`--plan my-run/scene-plan.json`.
+| Phase | Commands | Output |
+|---|---|---|
+| 1. Reference analysis | `vg reference` | `analysis/style.md` (**Gate 1**) |
+| 2. Footage prep | `vg transcribe`, `vg broll` | `analysis/transcript.json`, `analysis/broll_index.md` |
+| 3. Edit plan | `vg edl-draft`, `vg build` (to validate) | `plan/edl.md` (**Gate 2**) |
+| 4. Build | `vg build` | `composition/` |
+| 5. QA | `vg qa`, `vg snapshot --at …` | checks pass |
+| 6. Render | `vg render`, then `vg render --final` | `renders/draft_vN.mp4`, `renders/final.mp4` |
 
-## Brand
+Other aspect ratios from the same EDL: `vg render --phone` (9:16) or
+`--format 16:9|1:1|4:5`. By default the EDL's `**Format:**` line decides, and
+`source` keeps the main footage's own ratio.
 
-`brand.json` is a **placeholder** theme. Set the colors (hex) and fonts to the
-brand's own. Fonts outside the bundled HyperFrames set (Inter, Montserrat,
-Poppins, Oswald, Archivo Black and others) need a font file: put it in
-`fontFiles`.
+## The EDL
+
+`plan/edl.md` is a markdown table you can edit by hand. Row types: `cut` (main
+footage, back to back), `broll`, `title` / `text` / `callout` / `lower-third`,
+`music` (ducked under speech automatically) and `sfx`. The full format is in
+the skill file.
+
+```markdown
+**Format:** 9:16
+**Target length:** 45s
+
+| # | Out time | Source | In → Out | Type | Caption | B-roll / overlay | Motion preset | Notes |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0:00.00 | raw/take1.mp4 | 12.40 → 18.95 | cut | auto | broll/city.mp4 3 → 6 | punchIn | focus=0.45 |
+| 2 | 0:01.00 → 0:03.40 | | | title | "The biggest fear" | icon:warning | slamUp / liftOut | y=0.25 |
+| 3 | 0:00.00 | music/bed.mp3 | 0 → end | music | | | | volume=0.5 duck=0.3 |
+```
+
+## Motion presets
+
+`composition/styles/motion.js` holds named GSAP presets: entrances (`slamUp`,
+`popIn`, `fadeUp`, `zoomIn`, `wordStagger`, `letterPop`, `typewriter`,
+`drawOn`, `whipLeft`, and more), exits (`fadeOut`, `liftOut`, `popOut`,
+`slideDownOut`, `whipOutLeft`), framing for cuts (`punchIn`, `slowPush`,
+`slowPull`, `zoomBump`) and caption word highlights (`color`, `box`). It is
+created from `templates/motion.js` on the first build and never overwritten,
+so tune it per project. To reuse a house style, copy `style.md` and
+`motion.js` into the next project.
+
+## Notes
+
+- Source media is never modified: the composition links to it.
+- Fillers and retakes are only cut when the timing comes from speech
+  recognition. With `--srt` and no Whisper, timings are estimated (up to about
+  1 s off inside long cues) and these words are only flagged.
+- QA uses `hyperframes check`, which replaces the deprecated `inspect`.
+- The HyperFrames CLI sends anonymous telemetry by default.
 
 ## Tests
 
